@@ -5,9 +5,11 @@ from OpenGL.GLUT import *
 from OpenGL.GLU import *
 import random
 import time
+
 start_time = time.time()
+
 # Camera-related variables
-camera_pos = (0,500,500)
+camera_pos = (0, 500, 500)
 
 fovY = 120  # Field of view
 GRID_LENGTH = 1000
@@ -26,9 +28,10 @@ view_angle = 0
 
 # game states
 lives = 5
-bullets_missed = 0 # threshold 10
+bullets_missed = 0  # threshold 10
 score = 0
 is_game_over = False
+
 
 class GameState:
     def __str__(self):
@@ -36,6 +39,7 @@ class GameState:
         self.lives = 3
         self.is_game_over = False
         self.level = 1
+
 
 class Enemy:
     def __init__(self, pos, size, color, type, damage, speed, health):
@@ -47,10 +51,11 @@ class Enemy:
         self.speed = speed
         self.health = health
 
+
 class Player:
     def __init__(self, pos, inventory):
         self.pos = pos
-        self.inventory = inventory 
+        self.inventory = inventory
         self.base_speed = 10
         self.health = 100
 
@@ -62,6 +67,21 @@ class Inventory:
         self.weight = 0.0
         self.weapon_idx = -1
         self.power_up_idx = -1
+
+
+# ──────────────────────────────────────────────────────────────
+# NEW ► Bullet class
+# ──────────────────────────────────────────────────────────────
+class Bullet:
+    
+    def __init__(self, x, y, dx, dy, damage):
+        self.pos    = [x, y, 80]   # mid-body height
+        self.dx     = dx
+        self.dy     = dy
+        self.speed  = 20
+        self.damage = damage
+
+bullets = []   # active bullets in the world
 
 
 class Weapon:
@@ -91,7 +111,7 @@ class Weapon:
             elif self.type == "rifle":
                 glColor3f(0.2, 0.57, 0.45)
                 gluCylinder(quad, 5, 20, 100, 10, 10)
-        
+
         if self.is_equiped:
             rad = math.radians(player_angle)
 
@@ -109,9 +129,9 @@ class Weapon:
             ux, uy, uz = 0, 0, 1
 
             # ---- OFFSETS (tweak these) ----
-            forward_offset = 40   # push into screen
+            forward_offset = 40    # push into screen
             right_offset   = -15   # move to right
-            up_offset      = -0  # move downward
+            up_offset      = -0    # move downward
 
             # Camera position (same as in setupCamera)
             cam_x = player_pos[0] + fx * 20
@@ -138,7 +158,7 @@ class Weapon:
             elif self.type == "rifle":
                 glColor3f(0.2, 0.57, 0.45)
                 gluCylinder(quad, 5, 20, 100, 10, 10)
-            
+
         glPopMatrix()
 
     def draw_weapon_hud(self):
@@ -172,10 +192,12 @@ class Weapon:
         glPopMatrix()
         glMatrixMode(GL_MODELVIEW)
 
+
 class PowerUp:
     def __init__(self, title, type):
         self.title = title
         self.type = type
+
 
 class Level:
     pass
@@ -183,28 +205,369 @@ class Level:
 
 weapons = [
     Weapon("pistol", 10, (100, 100, 0)),
-    Weapon("rifle", 20, (-200, 50, 0)),
+    Weapon("rifle",  20, (-200, 50, 0)),
 ]
 
 inventory = Inventory()
 
+
+# ══════════════════════════════════════════════════════════════
+# NEW ► ENEMY SYSTEM
+# ══════════════════════════════════════════════════════════════
+#
+#  Three enemy types, each with a distinct silhouette:
+#
+#  SCOUT  – thin / fast / low HP  / low damage   (red)
+#  SOLDIER– normal / medium stats               (orange, helmet)
+#  TANK   – bulky / slow / high HP / high damage (purple, shoulder pads)
+#
+# ──────────────────────────────────────────────────────────────
+
+ENEMY_CONFIGS = {
+    'scout': {
+        'health': 30,  'size': 22,
+        'color': (1.0, 0.15, 0.15),
+        'damage': 5,   'speed': 1.0,
+        'score_value': 10,
+    },
+    'soldier': {
+        'health': 80,  'size': 38,
+        'color': (0.9, 0.50, 0.0),
+        'damage': 15,  'speed': 0.8,
+        'score_value': 25,
+    },
+    'tank': {
+        'health': 180, 'size': 60,
+        'color': (0.50, 0.0, 0.90),
+        'damage': 30,  'speed': 0.6,
+        'score_value': 50,
+    },
+}
+
+enemies          = []
+last_spawn_time  = start_time
+spawn_interval   = 4.0   # seconds between spawns
+max_enemies      = 8
+
+
+def _spawn_enemy():
+   
+    margin = GRID_LENGTH - 50
+    side   = random.randint(0, 3)
+
+    if   side == 0:  x, y =  random.uniform(-margin, margin),  margin
+    elif side == 1:  x, y =  random.uniform(-margin, margin), -margin
+    elif side == 2:  x, y =  margin,  random.uniform(-margin, margin)
+    else:            x, y = -margin,  random.uniform(-margin, margin)
+
+    etype = random.choice(list(ENEMY_CONFIGS.keys()))
+    cfg   = ENEMY_CONFIGS[etype]
+
+    enemies.append(Enemy(
+        pos    = [x, y, 0],
+        size   = cfg['size'],
+        color  = cfg['color'],
+        type   = etype,
+        damage = cfg['damage'],
+        speed  = cfg['speed'],
+        health = cfg['health'],
+    ))
+
+
+# ── Drawing helpers ────────────────────────────────────────────
+
+def _draw_scout(s, r, g, b, quad):
+    
+    legs_h = s * 0.85
+
+    # Torso (narrow)
+    glColor3f(r, g, b)
+    glPushMatrix()
+    glTranslatef(0, 0, s + legs_h)
+    glScalef(s * 0.6, s * 0.25, s * 1.6)
+    glutSolidCube(1)
+    glPopMatrix()
+
+    # Head (small)
+    glColor3f(r * 0.75, g * 0.75, b * 0.75)
+    glPushMatrix()
+    glTranslatef(0, 0, s * 2.1 + legs_h)
+    gluSphere(quad, s * 0.30, 12, 12)
+    glPopMatrix()
+
+    # Thin arms
+    glColor3f(r * 0.65, g * 0.65, b * 0.65)
+    for side in (-1, 1):
+        glPushMatrix()
+        glTranslatef(side * s * 0.45, 0, s * 1.7 + legs_h)
+        glRotatef(90, 1, 0, 0)
+        gluCylinder(quad, s * 0.07, s * 0.07, s * 1.0, 8, 8)
+        glPopMatrix()
+
+    # Thin legs
+    glColor3f(0.1, 0.0, 0.4)
+    for side in (-1, 1):
+        glPushMatrix()
+        glTranslatef(side * s * 0.18, 0, 0)
+        gluCylinder(quad, s * 0.09, s * 0.09, legs_h, 8, 8)
+        glPopMatrix()
+
+
+def _draw_soldier(s, r, g, b, quad):
+    
+    legs_h = s * 0.95
+
+    # Body
+    glColor3f(r, g, b)
+    glPushMatrix()
+    glTranslatef(0, 0, s + legs_h)
+    glScalef(s, s * 0.50, s * 2.0)
+    glutSolidCube(1)
+    glPopMatrix()
+
+    # Head (dark skin tone)
+    glColor3f(0.70, 0.50, 0.30)
+    glPushMatrix()
+    glTranslatef(0, 0, s * 2.55 + legs_h)
+    gluSphere(quad, s * 0.38, 12, 12)
+    glPopMatrix()
+
+    # Helmet (flat cube on head)
+    glColor3f(0.15, 0.15, 0.15)
+    glPushMatrix()
+    glTranslatef(0, 0, s * 2.85 + legs_h)
+    glScalef(s * 0.90, s * 0.90, s * 0.28)
+    glutSolidCube(1)
+    glPopMatrix()
+
+    # Arms
+    glColor3f(r * 0.80, g * 0.80, b * 0.80)
+    for side in (-1, 1):
+        glPushMatrix()
+        glTranslatef(side * s * 0.72, 0, s * 2.0 + legs_h)
+        glRotatef(90, 1, 0, 0)
+        gluCylinder(quad, s * 0.14, s * 0.14, s * 1.2, 10, 10)
+        glPopMatrix()
+
+    # Legs
+    glColor3f(0.15, 0.10, 0.05)
+    for side in (-1, 1):
+        glPushMatrix()
+        glTranslatef(side * s * 0.27, 0, 0)
+        gluCylinder(quad, s * 0.18, s * 0.18, legs_h, 10, 10)
+        glPopMatrix()
+
+
+def _draw_tank(s, r, g, b, quad):
+    
+    legs_h = s * 0.75
+
+    # Thick torso
+    glColor3f(r, g, b)
+    glPushMatrix()
+    glTranslatef(0, 0, s + legs_h)
+    glScalef(s * 1.40, s * 0.70, s * 2.2)
+    glutSolidCube(1)
+    glPopMatrix()
+
+    # Shoulder pads
+    glColor3f(r * 0.55, g * 0.55, b * 0.55)
+    for side in (-1, 1):
+        glPushMatrix()
+        glTranslatef(side * s * 0.95, 0, s * 2.4 + legs_h)
+        glScalef(s * 0.50, s * 0.40, s * 0.40)
+        glutSolidCube(1)
+        glPopMatrix()
+
+    # Big head
+    glColor3f(r * 0.70, g * 0.70, b * 0.70)
+    glPushMatrix()
+    glTranslatef(0, 0, s * 2.85 + legs_h)
+    gluSphere(quad, s * 0.52, 16, 16)
+    glPopMatrix()
+
+    # Thick arms
+    glColor3f(r * 0.80, g * 0.80, b * 0.80)
+    for side in (-1, 1):
+        glPushMatrix()
+        glTranslatef(side * s * 1.0, 0, s * 2.0 + legs_h)
+        glRotatef(90, 1, 0, 0)
+        gluCylinder(quad, s * 0.24, s * 0.20, s * 1.4, 12, 12)
+        glPopMatrix()
+
+    # Thick legs
+    glColor3f(0.20, 0.00, 0.40)
+    for side in (-1, 1):
+        glPushMatrix()
+        glTranslatef(side * s * 0.40, 0, 0)
+        gluCylinder(quad, s * 0.27, s * 0.27, legs_h, 12, 12)
+        glPopMatrix()
+
+
+def _draw_health_bar_3d(e):
+    
+    cfg        = ENEMY_CONFIGS[e.type]
+    max_hp     = cfg['health']
+    ratio      = max(0.0, e.health / max_hp)
+    bar_w      = e.size * 1.6
+    bar_h      = e.size * 0.28
+    bar_d      = bar_h * 0.5
+    above      = e.size * 4.8
+
+    glPushMatrix()
+    glTranslatef(e.pos[0], e.pos[1], e.pos[2] + above)
+
+    # Dark background strip
+    glColor3f(0.25, 0.0, 0.0)
+    glPushMatrix()
+    glScalef(bar_w, bar_d, bar_h)
+    glutSolidCube(1)
+    glPopMatrix()
+
+    # Coloured health fill
+    if   ratio > 0.6: glColor3f(0.0,  1.0,  0.0)
+    elif ratio > 0.3: glColor3f(1.0,  0.75, 0.0)
+    else:             glColor3f(1.0,  0.0,  0.0)
+
+    glPushMatrix()
+    glTranslatef(-bar_w * (1.0 - ratio) * 0.5, 0, bar_h * 0.35)
+    glScalef(bar_w * ratio, bar_d, bar_h)
+    glutSolidCube(1)
+    glPopMatrix()
+
+    glPopMatrix()
+
+
+def draw_enemy(e):
+    
+    quad = gluNewQuadric()
+
+    # Face the player
+    dx    = player_pos[0] - e.pos[0]
+    dy    = player_pos[1] - e.pos[1]
+    angle = math.degrees(math.atan2(dy, dx)) - 90
+
+    r, g, b = e.color
+
+    glPushMatrix()
+    glTranslatef(e.pos[0], e.pos[1], e.pos[2])
+    glRotatef(angle, 0, 0, 1)
+
+    if   e.type == 'scout':   _draw_scout  (e.size, r, g, b, quad)
+    elif e.type == 'soldier': _draw_soldier(e.size, r, g, b, quad)
+    elif e.type == 'tank':    _draw_tank   (e.size, r, g, b, quad)
+
+    glPopMatrix()
+
+    _draw_health_bar_3d(e)
+
+
+# ── Bullet drawing ─────────────────────────────────────────────
+
+def draw_bullet(b):
+    quad = gluNewQuadric()
+    glPushMatrix()
+    glTranslatef(b.pos[0], b.pos[1], b.pos[2])
+    glColor3f(1.0, 1.0, 0.0)   # bright yellow
+    gluSphere(quad, 5, 8, 8)
+    glPopMatrix()
+
+
+# ── Update loops ───────────────────────────────────────────────
+
+def update_enemies():
+    global enemies, lives, score, is_game_over, last_spawn_time
+
+    if is_game_over:
+        return
+
+    now = time.time()
+
+    # Timed spawn
+    if now - last_spawn_time >= spawn_interval and len(enemies) < max_enemies:
+        _spawn_enemy()
+        last_spawn_time = now
+
+    alive = []
+    for e in enemies:
+        dx   = player_pos[0] - e.pos[0]
+        dy   = player_pos[1] - e.pos[1]
+        dist = math.sqrt(dx * dx + dy * dy)
+
+        contact_dist = e.size + 35   # rough player radius
+
+        if dist < contact_dist:
+            # Enemy reaches player → inflict damage and despawn
+            lives -= 1
+            if lives <= 0:
+                lives          = 0
+                is_game_over   = True
+            # enemy is consumed; do NOT append to alive
+        else:
+            e.pos[0] += (dx / dist) * e.speed
+            e.pos[1] += (dy / dist) * e.speed
+            alive.append(e)
+
+    enemies[:] = alive
+
+
+def update_bullets():
+    global bullets, enemies, score
+
+    new_bullets = []
+    for b in bullets:
+        b.pos[0] += b.dx * b.speed
+        b.pos[1] += b.dy * b.speed
+
+        # Cull out-of-bounds
+        if abs(b.pos[0]) > GRID_LENGTH + 200 or abs(b.pos[1]) > GRID_LENGTH + 200:
+            continue
+
+        # Collision check against every enemy
+        hit = False
+        for e in enemies:
+            ddx  = b.pos[0] - e.pos[0]
+            ddy  = b.pos[1] - e.pos[1]
+            if math.sqrt(ddx * ddx + ddy * ddy) < e.size:
+                e.health -= b.damage
+                hit = True
+                break          # one bullet hits one enemy
+
+        if not hit:
+            new_bullets.append(b)
+
+    bullets[:] = new_bullets
+
+    # Award score and remove dead enemies
+    still_alive = []
+    for e in enemies:
+        if e.health > 0:
+            still_alive.append(e)
+        else:
+            score += ENEMY_CONFIGS[e.type]['score_value']
+    enemies[:] = still_alive
+
+# ══════════════════════════════════════════════════════════════
+# END NEW ► ENEMY SYSTEM
+# ══════════════════════════════════════════════════════════════
+
+
 def draw_text(x, y, text, font=GLUT_BITMAP_HELVETICA_18):
-    glColor3f(1,1,1)
+    glColor3f(1, 1, 1)
     glMatrixMode(GL_PROJECTION)
     glPushMatrix()
     glLoadIdentity()
-    
+
     gluOrtho2D(0, 1000, 0, 800)
 
-    
     glMatrixMode(GL_MODELVIEW)
     glPushMatrix()
     glLoadIdentity()
-    
+
     glRasterPos2f(x, y)
     for ch in text:
         glutBitmapCharacter(font, ord(ch))
-    
+
     glPopMatrix()
     glMatrixMode(GL_PROJECTION)
     glPopMatrix()
@@ -231,7 +594,6 @@ def keyboardListener(key, x, y):
         if abs(player_pos[1] - move_speed * forward_y) < GRID_LENGTH:
             player_pos[1] -= move_speed * forward_y
 
-
     if key == b'a':
         player_angle += rot_speed
 
@@ -243,7 +605,7 @@ def keyboardListener(key, x, y):
             dx = player_pos[0] - w.pos[0]
             dy = player_pos[1] - w.pos[1]
 
-            if (dx**2 + dy**2) < 10000: 
+            if (dx ** 2 + dy ** 2) < 10000:
                 inventory.weapons.append(w)
                 w.in_inventory = True
                 if inventory.weapon_idx >= 0:
@@ -265,30 +627,18 @@ def keyboardListener(key, x, y):
                 w.is_equiped = False
             inventory.weapons[inventory.weapon_idx].is_equiped = True
 
-    # if key == b'r':
-    #     lives = 5
-    #     score = 0
-    #     bullets_missed = 0
-    #     is_game_over = False
+    if key == b'r':
+        lives           = 5
+        score           = 0
+        bullets_missed  = 0
+        is_game_over    = False
+        player_fall_angle.__class__  # just a no-op; reset below
+        globals()['player_fall_angle'] = 0
+        enemies.clear()
+        bullets.clear()
 
 
 def specialKeyListener(key, x, y):
-    # global camera_pos
-    # x, y, z = camera_pos
-    
-    # if key == GLUT_KEY_UP:
-    #     y += 1
-
-    # if key == GLUT_KEY_DOWN:
-    #     y -=1
-
-    # if key == GLUT_KEY_LEFT:
-    #     x -= 1
-
-    # if key == GLUT_KEY_RIGHT:
-    #     x += 1
-
-    # camera_pos = (x, y, z)
     pass
 
 
@@ -303,14 +653,18 @@ def mouseListener(button, state, x, y):
         dx = math.cos(rad)
         dy = math.sin(rad)
 
-        # spawn bullet at player position
+        # Spawn bullet at player position
         bx = player_pos[0]
         by = player_pos[1]
 
-        # bullets.append(Bullet(bx, by, dx, dy))
+        # ── NEW: determine damage from equipped weapon ──────────────
+        if inventory.weapon_idx >= 0:
+            dmg = inventory.weapons[inventory.weapon_idx].damage
+        else:
+            dmg = 5   # bare-hands / no weapon
+        bullets.append(Bullet(bx, by, dx, dy, dmg))
+        # ─────────────────────────────────────────────────────────────
 
-    # if button == GLUT_RIGHT_BUTTON and state == GLUT_DOWN:
-    #     first_person = not first_person
 
 def setupCamera():
     global first_person, is_cheat_activated, view_angle
@@ -348,6 +702,10 @@ def setupCamera():
 
 
 def idle():
+    
+    update_enemies()
+    update_bullets()
+    
     glutPostRedisplay()
 
 
@@ -367,9 +725,9 @@ def draw_player(x, y, z):
 
         glRotatef(player_fall_angle, 1, 0, 0)
     else:
-        glRotatef(player_angle+90, 0, 0, 1)
+        glRotatef(player_angle + 90, 0, 0, 1)
 
-    glColor3f(85/255, 107/255, 47/255)
+    glColor3f(85 / 255, 107 / 255, 47 / 255)
     glPushMatrix()
     glTranslatef(0, 0, scale + legs_height)
     glScalef(scale, scale * 0.5, scale * 2)
@@ -380,7 +738,7 @@ def draw_player(x, y, z):
     glColor3f(0, 0, 0)
     glPushMatrix()
     glTranslatef(0, 0, scale * 2.5 + legs_height)
-    glutSolidSphere(scale * 0.4, 20, 20)
+    gluSphere(gluNewQuadric(), scale * 0.4, 20, 20)
     glPopMatrix()
 
     quad = gluNewQuadric()
@@ -388,7 +746,7 @@ def draw_player(x, y, z):
     # left arm
     glColor3f(1.0, 0.8, 0.6)
     glPushMatrix()
-    glTranslatef(- scale * 0.8, 0, scale * 2)
+    glTranslatef(-scale * 0.8, 0, scale * 2)
     glRotatef(90, 1, 0, 0)
     gluCylinder(quad, scale * 0.15, scale * 0.15, scale * 1.2, 10, 10)
     glPopMatrix()
@@ -403,7 +761,7 @@ def draw_player(x, y, z):
     # lleg
     glColor3f(0.0, 0.0, 1.0)
     glPushMatrix()
-    glTranslatef(0- scale * 0.3, 0, 0)
+    glTranslatef(0 - scale * 0.3, 0, 0)
     gluCylinder(quad, scale * 0.2, scale * 0.2, scale * 1.5, 10, 10)
     glPopMatrix()
 
@@ -413,25 +771,26 @@ def draw_player(x, y, z):
     gluCylinder(quad, scale * 0.2, scale * 0.2, scale * 1.5, 10, 10)
     glPopMatrix()
 
-    
-
-    glPopMatrix() 
+    glPopMatrix()
 
 
 def showScreen():
-
     global is_game_over, lives, bullets_missed, score
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-    glLoadIdentity() 
-    glViewport(0, 0, 1000, 800) 
+    glLoadIdentity()
+    glViewport(0, 0, 1000, 800)
 
     setupCamera()
-    
+
     if not is_game_over:
         draw_text(10, 770, f"Player Life Remaining: {lives}")
         draw_text(10, 740, f"Game Score: {score}")
         current_weapon = inventory.weapons[inventory.weapon_idx].type if inventory.weapon_idx > -1 else "N/A"
         draw_text(10, 710, f"Current Weapon: {current_weapon}")
+        # ── NEW: enemy counter HUD ─────────────────────────────────────
+        draw_text(10, 680, f"Enemies: {len(enemies)}")
+        draw_text(10, 650, f"[LMB] Shoot   [F] Pick up weapon   [1/2] Switch   [R] Restart")
+        # ──────────────────────────────────────────────────────────────
     else:
         draw_text(10, 770, f"Game is over. Your score is {score}")
         draw_text(10, 740, f"Press \"R\" to restart the game")
@@ -453,15 +812,23 @@ def showScreen():
             x = -GRID_LENGTH + i * cell
             y = -GRID_LENGTH + j * cell
 
-            glVertex3f(x,         y,         0)
-            glVertex3f(x + cell,  y,         0)
-            glVertex3f(x + cell,  y + cell,  0)
-            glVertex3f(x,         y + cell,  0)
+            glVertex3f(x,        y,        0)
+            glVertex3f(x + cell, y,        0)
+            glVertex3f(x + cell, y + cell, 0)
+            glVertex3f(x,        y + cell, 0)
 
     glEnd()
 
     for w in weapons:
         w.draw()
+
+    # ── NEW: draw enemies and bullets ─────────────────────────────
+    for e in enemies:
+        draw_enemy(e)
+
+    for b in bullets:
+        draw_bullet(b)
+    # ──────────────────────────────────────────────────────────────
 
     glutSwapBuffers()
 
@@ -480,6 +847,7 @@ def main():
     glutIdleFunc(idle)
 
     glutMainLoop()
+
 
 if __name__ == "__main__":
     main()
